@@ -1,31 +1,68 @@
-# AI-Powered ETF Analysis Website
+# SMIF Stock & ETF Analysis Website
 
-This project was created as a demo for an Advanced Financial Modeling class.
+This project was created as a teaching demo for SMIF and Advanced Financial Modeling students.
 
-The class leveraged AI and prompt engineering to enhance students' Python skills and financial modeling expertise. Students used AI-assisted coding to build an interactive ETF analysis website that allows users to compare ETFs across key performance and risk metrics.
+The website allows students to compare both individual stocks and ETFs using Python, Streamlit, and AI-assisted financial modeling.
 
-## Features
+## Purpose
 
-The website allows users to compare ETFs by:
+The purpose of this project is to help students move beyond static spreadsheet analysis and develop an interactive, professional-style investment analytics dashboard.
+
+Students can analyze stocks and ETFs by comparing:
 
 - Cumulative returns
+- Normalized price performance
 - Annual returns
 - CAGR
 - Volatility
 - Sharpe ratio
 - Beta versus a benchmark
 - Maximum drawdown
-- Best year and worst year
+- Correlation
+- Rolling volatility
 
-## Teaching Purpose
+## Example Tickers
 
-This project demonstrates how AI can support financial modeling education by helping students:
+Students may compare individual stocks and ETFs such as:
 
-- Structure Python code
-- Debug financial analytics workflows
-- Build interactive dashboards
-- Interpret ETF performance metrics
-- Connect financial theory with real-world investment analysis
+- AAPL
+- MSFT
+- NVDA
+- AMZN
+- META
+- JPM
+- LLY
+- SPY
+- QQQ
+- VOO
+- VTI
+- TLT
+- GLD
+- SGOV
+
+## Teaching Applications
+
+This app can be used in:
+
+- Student Managed Investment Fund
+- Advanced Financial Modeling
+- Investments
+- Portfolio Management
+- Python for Finance
+- FinTech
+
+## Suggested Student Analysis
+
+For each stock or ETF, students should discuss:
+
+1. Investment thesis
+2. Return performance
+3. Risk and volatility
+4. Beta and market sensitivity
+5. Maximum drawdown
+6. Correlation with other holdings
+7. Role in the portfolio
+8. Final recommendation: Buy, Add, Hold, Trim, Sell, or Watchlist
 
 ## Tools Used
 
@@ -36,22 +73,6 @@ This project demonstrates how AI can support financial modeling education by hel
 - Plotly
 - yfinance
 - AI-assisted coding and prompt engineering
-
-## Example ETFs
-
-Users can analyze ETFs such as:
-
-- SPY
-- QQQ
-- VOO
-- VTI
-- IWM
-- TLT
-- GLD
-- SGOV
-- XLK
-- XLF
-- XLE
 
 ## Educational Disclaimer
 
