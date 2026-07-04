@@ -3,65 +3,56 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.express as px
-import plotly.graph_objects as go
 from scipy.optimize import minimize
-import feedparser
-from datetime import datetime, timezone
+
+try:
+    import feedparser
+except Exception:
+    feedparser = None
 
 try:
     from streamlit_autorefresh import st_autorefresh
 except Exception:
     st_autorefresh = None
 
+# -----------------------------
+# Page config
+# -----------------------------
 st.set_page_config(page_title="SMIF Stock & ETF Analysis Website", layout="wide")
 
 # -----------------------------
-# Preset ticker lists
+# Preset ticker groups
 # -----------------------------
-SMIF_PRESETS = {
+PRESETS = {
     "Technology / Communication": "AAPL, MSFT, NVDA, AVGO, META, GOOG, AMZN, ASML, QQQ, SPY",
     "Healthcare": "LLY, JNJ, PFE, BMY, UNH, ABT, REGN, BIIB, XLV, SPY",
     "Financials": "JPM, BLK, SCHW, MA, V, XLF, SPY",
     "Energy / Industrials": "XOM, CVX, SHEL, OXY, LMT, EMR, FDX, UNP, XLE, XLI, SPY",
     "Consumer": "AMZN, WMT, COST, XLY, XLP, SPY",
-    "Defensive / Hedge": "SGOV, TLT, GLD, SPY, QQQ",
-    "All Sample SMIF Holdings": "AAPL, MSFT, NVDA, AVGO, META, GOOG, AMZN, ASML, LLY, JNJ, PFE, BMY, UNH, ABT, REGN, BIIB, JPM, BLK, SCHW, MA, V, XOM, CVX, SHEL, OXY, LMT, EMR, FDX, UNP, WMT, COST, GLD, SGOV, TLT, SPY, QQQ",
+    "Defensive / Hedge": "SPY, QQQ, TLT, GLD, SGOV, VOO, VTI",
+    "Custom": "AAPL, MSFT, NVDA, SPY, QQQ, TLT, GLD, SGOV",
 }
 
-st.title("SMIF Stock & ETF Analysis Website")
-
-st.write(
-    """
-    This interactive website is designed for SMIF and Advanced Financial Modeling students. Students can compare individual stocks and ETFs using Python, AI-assisted coding, and financial modeling tools.
-
-    The website allows users to compare cumulative returns, annual returns, CAGR, volatility, Sharpe ratios, beta, maximum drawdowns, correlations, rolling volatility, professional manager evaluation metrics, mean-variance optimization, and custom optimization results, and real-time market headline updates.
-    """
-)
-
-st.info("Educational demo only. This app does not provide investment, tax, legal, or financial planning advice.")
-
 # -----------------------------
-# Sidebar Inputs
+# Sidebar
 # -----------------------------
 st.sidebar.header("User Inputs")
 
-preset_name = st.sidebar.selectbox("Choose a SMIF preset list", list(SMIF_PRESETS.keys()))
+preset = st.sidebar.selectbox("Choose a SMIF preset list", list(PRESETS.keys()), index=0)
 
 tickers_input = st.sidebar.text_area(
     "Enter stock or ETF tickers separated by commas",
-    SMIF_PRESETS[preset_name],
-    height=100,
+    PRESETS[preset],
+    height=95,
 )
 
 benchmark_input = st.sidebar.text_input("Benchmark ticker", "SPY")
-
 start_date = st.sidebar.date_input("Start Date", pd.to_datetime("2018-01-01"))
 end_date = st.sidebar.date_input("End Date", pd.to_datetime("today"))
-
 risk_free_rate = st.sidebar.number_input(
     "Annual Risk-Free Rate",
     min_value=0.0,
-    max_value=0.20,
+    max_value=0.25,
     value=0.04,
     step=0.005,
     format="%.3f",
@@ -69,10 +60,10 @@ risk_free_rate = st.sidebar.number_input(
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("Optimization Settings")
-max_weight = st.sidebar.slider("Maximum weight per asset", 0.05, 1.00, 0.20, 0.05)
-num_simulations = st.sidebar.slider("Random portfolios for efficient frontier", 500, 8000, 2500, 500)
+max_weight = st.sidebar.slider("Maximum weight per asset", 0.05, 1.0, 0.20, 0.01)
+num_random_portfolios = st.sidebar.slider("Random portfolios for efficient frontier", 500, 10000, 2500, 500)
 
-st.sidebar.markdown("**Custom Optimization**")
+st.sidebar.subheader("Custom Optimization")
 custom_objective = st.sidebar.selectbox(
     "Custom objective",
     [
@@ -83,585 +74,518 @@ custom_objective = st.sidebar.selectbox(
         "Balanced Return-Risk Score",
     ],
 )
-target_return = st.sidebar.number_input(
-    "Target annual return for custom optimization",
-    min_value=-0.50,
-    max_value=1.00,
-    value=0.10,
-    step=0.01,
-    format="%.2f",
-)
-target_volatility = st.sidebar.number_input(
-    "Target annual volatility for custom optimization",
-    min_value=0.01,
-    max_value=1.00,
-    value=0.20,
-    step=0.01,
-    format="%.2f",
-)
-risk_aversion = st.sidebar.slider(
-    "Risk penalty for balanced score",
-    min_value=0.0,
-    max_value=10.0,
-    value=3.0,
-    step=0.5,
-)
+target_return = st.sidebar.number_input("Target annual return for custom optimization", 0.0, 1.0, 0.10, 0.01)
+target_volatility = st.sidebar.number_input("Target annual volatility for custom optimization", 0.01, 1.0, 0.20, 0.01)
+risk_penalty = st.sidebar.slider("Risk penalty for balanced score", 0.0, 10.0, 3.0, 0.25)
 
 st.sidebar.markdown("---")
 st.sidebar.write("Example stocks: AAPL, MSFT, NVDA, AMZN, META, JPM, LLY")
 st.sidebar.write("Example ETFs: SPY, QQQ, VOO, VTI, TLT, GLD, SGOV")
 
 # -----------------------------
-# Data Loading
+# Data helpers
 # -----------------------------
-tickers = [ticker.strip().upper() for ticker in tickers_input.split(",") if ticker.strip()]
+def clean_tickers(text):
+    tickers = []
+    for item in text.replace("\n", ",").split(","):
+        ticker = item.strip().upper()
+        if ticker and ticker not in tickers:
+            tickers.append(ticker)
+    return tickers
+
+tickers = clean_tickers(tickers_input)
 benchmark = benchmark_input.strip().upper()
+all_tickers = list(dict.fromkeys(tickers + ([benchmark] if benchmark and benchmark not in tickers else [])))
 
-# Remove duplicates while keeping order
-tickers = list(dict.fromkeys(tickers))
-
-all_tickers = tickers.copy()
-if benchmark and benchmark not in all_tickers:
-    all_tickers.append(benchmark)
-
-@st.cache_data(show_spinner=False)
+@st.cache_data(ttl=900)
 def load_price_data(ticker_list, start, end):
+    if not ticker_list:
+        return pd.DataFrame()
     data = yf.download(ticker_list, start=start, end=end, auto_adjust=True, progress=False)
     if data.empty:
         return pd.DataFrame()
     if isinstance(data.columns, pd.MultiIndex):
-        prices = data["Close"]
+        prices = data["Close"].copy()
     else:
-        prices = data[["Close"]]
-        prices.columns = ticker_list
+        prices = data[["Close"]].copy()
+        prices.columns = ticker_list[:1]
     prices = prices.dropna(how="all")
     return prices
 
-with st.spinner("Downloading price data..."):
-    prices = load_price_data(all_tickers, start_date, end_date)
+prices = load_price_data(all_tickers, start_date, end_date)
 
-if prices.empty:
-    st.error("No price data found. Please check your tickers and date range.")
-    st.stop()
+# Only keep tickers that have some valid data
+available_tickers = []
+if not prices.empty:
+    available_tickers = [t for t in tickers if t in prices.columns and prices[t].dropna().shape[0] > 5]
 
-available_tickers = [ticker for ticker in tickers if ticker in prices.columns]
-if len(available_tickers) == 0:
-    st.error("None of the selected stock or ETF tickers were found.")
-    st.stop()
-if benchmark not in prices.columns:
-    st.error("Benchmark data was not found. Please check the benchmark ticker.")
-    st.stop()
-
-# Drop assets with too little data; align returns for optimization/evaluation
-returns = prices.pct_change().dropna(how="all")
-asset_returns = returns[available_tickers].dropna(how="all")
-benchmark_returns = returns[benchmark].dropna()
+# Prepare returns only if data is available
+if not prices.empty and available_tickers and benchmark in prices.columns:
+    returns = prices.pct_change(fill_method=None).dropna(how="all")
+    asset_returns = returns[available_tickers].dropna(how="all")
+    benchmark_returns = returns[benchmark].dropna()
+else:
+    returns = pd.DataFrame()
+    asset_returns = pd.DataFrame()
+    benchmark_returns = pd.Series(dtype=float)
 
 # -----------------------------
-# Helper Functions
+# Finance helper functions
 # -----------------------------
+def annualized_return(r):
+    r = r.dropna()
+    if len(r) == 0:
+        return np.nan
+    years = len(r) / 252
+    total = (1 + r).prod()
+    if years <= 0 or total <= 0:
+        return np.nan
+    return total ** (1 / years) - 1
+
+def annualized_volatility(r):
+    r = r.dropna()
+    if len(r) == 0:
+        return np.nan
+    return r.std() * np.sqrt(252)
+
+def max_drawdown(r):
+    r = r.dropna()
+    if len(r) == 0:
+        return np.nan
+    curve = (1 + r).cumprod()
+    running_max = curve.cummax()
+    dd = curve / running_max - 1
+    return dd.min()
+
+def downside_deviation(r, mar=0.0):
+    r = r.dropna()
+    downside = r[r < mar / 252]
+    if len(downside) == 0:
+        return np.nan
+    return downside.std() * np.sqrt(252)
+
+def calculate_beta(asset_r, bench_r):
+    aligned = pd.concat([asset_r, bench_r], axis=1).dropna()
+    if len(aligned) < 5:
+        return np.nan
+    aligned.columns = ["asset", "benchmark"]
+    bench_var = np.var(aligned["benchmark"])
+    if bench_var == 0:
+        return np.nan
+    return np.cov(aligned["asset"], aligned["benchmark"])[0][1] / bench_var
+
 def calculate_metrics(returns_df, benchmark_series, rf_rate):
-    trading_days = 252
-    metrics = []
+    columns = [
+        "Ticker", "Cumulative Return", "CAGR", "Volatility", "Sharpe Ratio", "Sortino Ratio",
+        "Beta vs Benchmark", "Max Drawdown", "Best Year", "Worst Year"
+    ]
+    rows = []
+    if returns_df.empty:
+        return pd.DataFrame(columns=columns)
     for ticker in returns_df.columns:
         r = returns_df[ticker].dropna()
-        aligned = pd.concat([r, benchmark_series], axis=1).dropna()
-        aligned.columns = ["Asset", "Benchmark"]
-        if len(r) < 2:
+        if len(r) < 5:
             continue
         cumulative_return = (1 + r).prod() - 1
-        years = len(r) / trading_days
-        cagr = (1 + cumulative_return) ** (1 / years) - 1 if years > 0 else np.nan
-        volatility = r.std() * np.sqrt(trading_days)
-        sharpe_ratio = (cagr - rf_rate) / volatility if volatility and volatility != 0 else np.nan
-        if len(aligned) > 2:
-            covariance = np.cov(aligned["Asset"], aligned["Benchmark"])[0][1]
-            benchmark_variance = np.var(aligned["Benchmark"])
-            beta = covariance / benchmark_variance if benchmark_variance != 0 else np.nan
-        else:
-            beta = np.nan
-        cumulative_curve = (1 + r).cumprod()
-        running_max = cumulative_curve.cummax()
-        drawdown = cumulative_curve / running_max - 1
-        max_drawdown = drawdown.min()
-        annual_returns = r.resample("YE").apply(lambda x: (1 + x).prod() - 1)
-        best_year = annual_returns.max()
-        worst_year = annual_returns.min()
-        metrics.append({
+        cagr = annualized_return(r)
+        vol = annualized_volatility(r)
+        sharpe = (cagr - rf_rate) / vol if pd.notna(vol) and vol != 0 else np.nan
+        dd = downside_deviation(r)
+        sortino = (cagr - rf_rate) / dd if pd.notna(dd) and dd != 0 else np.nan
+        beta = calculate_beta(r, benchmark_series)
+        mdd = max_drawdown(r)
+        annual = r.resample("YE").apply(lambda x: (1 + x).prod() - 1)
+        rows.append({
             "Ticker": ticker,
             "Cumulative Return": cumulative_return,
             "CAGR": cagr,
-            "Volatility": volatility,
-            "Sharpe Ratio": sharpe_ratio,
+            "Volatility": vol,
+            "Sharpe Ratio": sharpe,
+            "Sortino Ratio": sortino,
             "Beta vs Benchmark": beta,
-            "Max Drawdown": max_drawdown,
-            "Best Year": best_year,
-            "Worst Year": worst_year,
+            "Max Drawdown": mdd,
+            "Best Year": annual.max() if len(annual) else np.nan,
+            "Worst Year": annual.min() if len(annual) else np.nan,
         })
-    return pd.DataFrame(metrics)
+    return pd.DataFrame(rows, columns=columns)
 
 def calculate_drawdowns(returns_df):
-    drawdowns = pd.DataFrame(index=returns_df.index)
+    out = pd.DataFrame(index=returns_df.index)
     for ticker in returns_df.columns:
         r = returns_df[ticker].dropna()
-        cumulative_curve = (1 + r).cumprod()
-        running_max = cumulative_curve.cummax()
-        drawdowns[ticker] = cumulative_curve / running_max - 1
-    return drawdowns
+        curve = (1 + r).cumprod()
+        out[ticker] = curve / curve.cummax() - 1
+    return out
 
 def calculate_manager_metrics(returns_df, benchmark_series, rf_rate):
-    trading_days = 252
+    columns = [
+        "Ticker", "Jensen Alpha", "Information Ratio", "Tracking Error", "Treynor Ratio",
+        "Upside Capture", "Downside Capture", "Batting Average", "Sharpe Ratio", "Max Drawdown"
+    ]
     rows = []
-    daily_rf = rf_rate / trading_days
+    if returns_df.empty or benchmark_series.empty:
+        return pd.DataFrame(columns=columns)
+    bench_ann = annualized_return(benchmark_series)
     for ticker in returns_df.columns:
-        aligned = pd.concat([returns_df[ticker], benchmark_series], axis=1).dropna()
-        aligned.columns = ["Asset", "Benchmark"]
-        if len(aligned) < 30:
+        r = returns_df[ticker].dropna()
+        aligned = pd.concat([r, benchmark_series], axis=1).dropna()
+        if len(aligned) < 20:
             continue
-        asset = aligned["Asset"]
-        bench = aligned["Benchmark"]
-        excess_asset = asset - daily_rf
-        excess_bench = bench - daily_rf
-        beta = np.cov(asset, bench)[0][1] / np.var(bench) if np.var(bench) != 0 else np.nan
-        alpha_daily = (asset.mean() - daily_rf) - beta * (bench.mean() - daily_rf) if not np.isnan(beta) else np.nan
-        jensen_alpha = alpha_daily * trading_days if not np.isnan(alpha_daily) else np.nan
-        active_return = asset - bench
-        tracking_error = active_return.std() * np.sqrt(trading_days)
-        information_ratio = (active_return.mean() * trading_days) / tracking_error if tracking_error != 0 else np.nan
-        asset_cagr = (1 + asset).prod() ** (trading_days / len(asset)) - 1
-        vol = asset.std() * np.sqrt(trading_days)
-        sharpe = (asset_cagr - rf_rate) / vol if vol != 0 else np.nan
-        treynor = (asset_cagr - rf_rate) / beta if beta and beta != 0 else np.nan
-        downside = asset[asset < 0]
-        downside_dev = downside.std() * np.sqrt(trading_days) if len(downside) > 1 else np.nan
-        sortino = (asset_cagr - rf_rate) / downside_dev if downside_dev and downside_dev != 0 else np.nan
-        up_periods = bench > 0
-        down_periods = bench < 0
-        upside_capture = asset[up_periods].mean() / bench[up_periods].mean() if up_periods.sum() > 0 and bench[up_periods].mean() != 0 else np.nan
-        downside_capture = asset[down_periods].mean() / bench[down_periods].mean() if down_periods.sum() > 0 and bench[down_periods].mean() != 0 else np.nan
-        batting_average = (active_return > 0).mean()
-        cumulative_curve = (1 + asset).cumprod()
-        max_drawdown = (cumulative_curve / cumulative_curve.cummax() - 1).min()
+        aligned.columns = ["asset", "benchmark"]
+        asset_ann = annualized_return(aligned["asset"])
+        asset_vol = annualized_volatility(aligned["asset"])
+        beta = calculate_beta(aligned["asset"], aligned["benchmark"])
+        sharpe = (asset_ann - rf_rate) / asset_vol if pd.notna(asset_vol) and asset_vol != 0 else np.nan
+        jensen_alpha = asset_ann - (rf_rate + beta * (bench_ann - rf_rate)) if pd.notna(beta) and pd.notna(bench_ann) else np.nan
+        active = aligned["asset"] - aligned["benchmark"]
+        tracking_error = active.std() * np.sqrt(252)
+        active_ann = annualized_return(aligned["asset"]) - annualized_return(aligned["benchmark"])
+        information_ratio = active_ann / tracking_error if tracking_error != 0 else np.nan
+        treynor = (asset_ann - rf_rate) / beta if pd.notna(beta) and beta != 0 else np.nan
+        up = aligned[aligned["benchmark"] > 0]
+        down = aligned[aligned["benchmark"] < 0]
+        upside_capture = up["asset"].mean() / up["benchmark"].mean() if len(up) > 0 and up["benchmark"].mean() != 0 else np.nan
+        downside_capture = down["asset"].mean() / down["benchmark"].mean() if len(down) > 0 and down["benchmark"].mean() != 0 else np.nan
+        batting = (active > 0).mean() if len(active) > 0 else np.nan
         rows.append({
             "Ticker": ticker,
             "Jensen Alpha": jensen_alpha,
             "Information Ratio": information_ratio,
             "Tracking Error": tracking_error,
-            "Beta": beta,
             "Treynor Ratio": treynor,
-            "Sortino Ratio": sortino,
             "Upside Capture": upside_capture,
             "Downside Capture": downside_capture,
-            "Batting Average": batting_average,
+            "Batting Average": batting,
             "Sharpe Ratio": sharpe,
-            "Max Drawdown": max_drawdown,
+            "Max Drawdown": max_drawdown(aligned["asset"]),
         })
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows, columns=columns)
 
-def portfolio_stats(weights, mean_returns, cov_matrix, rf_rate):
-    ret = float(np.dot(weights, mean_returns))
-    vol = float(np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights))))
+def portfolio_stats(weights, mu, cov, rf_rate):
+    ret = float(np.dot(weights, mu))
+    vol = float(np.sqrt(np.dot(weights.T, np.dot(cov, weights))))
     sharpe = (ret - rf_rate) / vol if vol != 0 else np.nan
     return ret, vol, sharpe
 
-def optimize_portfolio(mean_returns, cov_matrix, rf_rate, objective="max_sharpe", max_w=0.20):
-    n = len(mean_returns)
-    bounds = tuple((0, max_w) for _ in range(n))
-    constraints = ({"type": "eq", "fun": lambda w: np.sum(w) - 1})
-    x0 = np.array([1 / n] * n)
-    if n * max_w < 1:
+def optimize_portfolio(mu, cov, rf_rate, objective="max_sharpe", max_w=0.2, target_ret=0.10, target_vol=0.20, risk_pen=3.0):
+    n = len(mu)
+    if n == 0:
         return None
-
-    def neg_sharpe(w):
-        ret, vol, sharpe = portfolio_stats(w, mean_returns, cov_matrix, rf_rate)
-        return -sharpe if not np.isnan(sharpe) else 1e6
-
-    def min_vol(w):
-        return portfolio_stats(w, mean_returns, cov_matrix, rf_rate)[1]
-
-    objective_func = neg_sharpe if objective == "max_sharpe" else min_vol
-    result = minimize(objective_func, x0=x0, method="SLSQP", bounds=bounds, constraints=constraints)
-    return result.x if result.success else None
-
-
-def optimize_custom_portfolio(
-    mean_returns,
-    cov_matrix,
-    rf_rate,
-    custom_objective,
-    max_w=0.20,
-    target_return=0.10,
-    target_volatility=0.20,
-    risk_aversion=3.0,
-):
-    """Create a long-only custom optimized portfolio with practical SMIF-style constraints."""
-    n = len(mean_returns)
-    if n * max_w < 1:
-        return None, "The maximum weight constraint is too tight for the number of assets."
-
-    bounds = tuple((0, max_w) for _ in range(n))
+    bounds = [(0, max_w)] * n
     constraints = [{"type": "eq", "fun": lambda w: np.sum(w) - 1}]
-    x0 = np.array([1 / n] * n)
+    x0 = np.repeat(1 / n, n)
 
-    def ret(w):
-        return float(np.dot(w, mean_returns))
-
-    def vol(w):
-        return float(np.sqrt(np.dot(w.T, np.dot(cov_matrix, w))))
-
-    def sharpe(w):
-        v = vol(w)
-        return (ret(w) - rf_rate) / v if v != 0 else -1e6
-
-    if custom_objective == "Maximize Sharpe Ratio":
-        objective = lambda w: -sharpe(w)
-    elif custom_objective == "Minimize Volatility":
-        objective = lambda w: vol(w)
-    elif custom_objective == "Target Return: Minimize Volatility":
-        constraints.append({"type": "ineq", "fun": lambda w: ret(w) - target_return})
-        objective = lambda w: vol(w)
-    elif custom_objective == "Target Risk: Maximize Return":
-        constraints.append({"type": "ineq", "fun": lambda w: target_volatility - vol(w)})
-        objective = lambda w: -ret(w)
-    elif custom_objective == "Balanced Return-Risk Score":
-        # Maximize return minus a penalty for variance. Higher risk_aversion penalizes risk more.
-        objective = lambda w: -(ret(w) - risk_aversion * (vol(w) ** 2))
+    if objective == "max_sharpe":
+        def obj(w):
+            _, _, s = portfolio_stats(w, mu, cov, rf_rate)
+            return -s if pd.notna(s) else 1e6
+    elif objective == "min_vol":
+        def obj(w):
+            return portfolio_stats(w, mu, cov, rf_rate)[1]
+    elif objective == "target_return":
+        constraints.append({"type": "ineq", "fun": lambda w: np.dot(w, mu) - target_ret})
+        def obj(w):
+            return portfolio_stats(w, mu, cov, rf_rate)[1]
+    elif objective == "target_risk":
+        constraints.append({"type": "ineq", "fun": lambda w: target_vol - portfolio_stats(w, mu, cov, rf_rate)[1]})
+        def obj(w):
+            return -np.dot(w, mu)
     else:
-        objective = lambda w: -sharpe(w)
+        def obj(w):
+            ret, vol, _ = portfolio_stats(w, mu, cov, rf_rate)
+            return -(ret - risk_pen * vol)
 
-    result = minimize(objective, x0=x0, method="SLSQP", bounds=bounds, constraints=constraints)
-    if result.success:
-        return result.x, "Optimization successful."
-    return None, result.message
+    result = minimize(obj, x0, method="SLSQP", bounds=bounds, constraints=constraints)
+    if not result.success:
+        return None
+    return result.x
 
-def random_portfolios(mean_returns, cov_matrix, rf_rate, num=2500, max_w=0.20):
-    n = len(mean_returns)
+def random_portfolios(mu, cov, rf_rate, n_ports=2500, max_w=0.2):
+    n = len(mu)
     rows = []
-    if n * max_w < 1:
+    if n == 0:
         return pd.DataFrame()
-    attempts = 0
-    while len(rows) < num and attempts < num * 20:
-        attempts += 1
-        w = np.random.dirichlet(np.ones(n), size=1)[0]
+    for _ in range(n_ports):
+        # rejection sampling to respect max weight; fallback if not possible
+        w = np.random.dirichlet(np.ones(n))
+        attempts = 0
+        while np.max(w) > max_w and attempts < 100:
+            w = np.random.dirichlet(np.ones(n))
+            attempts += 1
         if np.max(w) > max_w:
             continue
-        ret, vol, sharpe = portfolio_stats(w, mean_returns, cov_matrix, rf_rate)
-        rows.append({"Return": ret, "Volatility": vol, "Sharpe": sharpe, "Weights": w})
+        ret, vol, sharpe = portfolio_stats(w, mu, cov, rf_rate)
+        rows.append({"Return": ret, "Volatility": vol, "Sharpe Ratio": sharpe})
     return pd.DataFrame(rows)
-
-
-# -----------------------------
-# Market News RSS Helpers
-# -----------------------------
-NEWS_FEEDS = {
-    "WSJ Markets": "https://feeds.a.dj.com/rss/RSSMarketsMain.xml",
-    "WSJ Business": "https://feeds.a.dj.com/rss/WSJcomUSBusiness.xml",
-    "CNBC Top News": "https://www.cnbc.com/id/100003114/device/rss/rss.html",
-    "CNBC Markets": "https://www.cnbc.com/id/10001147/device/rss/rss.html",
-}
 
 @st.cache_data(ttl=300)
-def fetch_news_feeds(feed_urls):
+def load_rss_news(url, source):
+    if feedparser is None:
+        return pd.DataFrame(columns=["Source", "Published", "Headline", "Link"])
+    feed = feedparser.parse(url)
     rows = []
-    for source, url in feed_urls.items():
-        try:
-            parsed = feedparser.parse(url)
-            for entry in parsed.entries[:12]:
-                published = entry.get("published", entry.get("updated", ""))
-                title = entry.get("title", "Untitled")
-                link = entry.get("link", "")
-                summary = entry.get("summary", "")
-                rows.append({
-                    "Source": source,
-                    "Published": published,
-                    "Headline": title,
-                    "Link": link,
-                    "Summary": summary,
-                })
-        except Exception as exc:
-            rows.append({
-                "Source": source,
-                "Published": "",
-                "Headline": f"Unable to load feed: {exc}",
-                "Link": url,
-                "Summary": "",
-            })
+    for entry in feed.entries:
+        rows.append({
+            "Source": source,
+            "Published": getattr(entry, "published", ""),
+            "Headline": getattr(entry, "title", ""),
+            "Link": getattr(entry, "link", ""),
+        })
     return pd.DataFrame(rows)
 
-def filter_news(news_df, keyword_text):
-    if news_df.empty or not keyword_text.strip():
-        return news_df
-    keywords = [k.strip().lower() for k in keyword_text.split(",") if k.strip()]
-    if not keywords:
-        return news_df
-    combined = (news_df["Headline"].fillna("") + " " + news_df["Summary"].fillna("")).str.lower()
-    mask = combined.apply(lambda x: any(k in x for k in keywords))
-    return news_df[mask]
+# -----------------------------
+# Header
+# -----------------------------
+st.title("SMIF Stock & ETF Analysis Website")
+st.write(
+    "This interactive website is designed for SMIF and Advanced Financial Modeling students. "
+    "Students can compare individual stocks and ETFs using Python, AI-assisted coding, and financial modeling tools."
+)
+st.write(
+    "The website allows users to compare cumulative returns, annual returns, CAGR, volatility, Sharpe ratios, beta, "
+    "maximum drawdowns, correlations, rolling volatility, professional manager evaluation metrics, "
+    "mean-variance optimization, custom optimization results, and market headline updates."
+)
+st.info("Educational demo only. This app does not provide investment, tax, legal, or financial planning advice.")
 
-metrics_df = calculate_metrics(asset_returns, benchmark_returns, risk_free_rate)
-manager_df = calculate_manager_metrics(asset_returns, benchmark_returns, risk_free_rate)
+# Data warning
+if prices.empty:
+    st.error("No price data found. Please check your tickers and date range.")
+elif not available_tickers:
+    st.error("No selected ticker has enough valid price data. Please check ticker symbols and date range.")
+elif benchmark not in prices.columns:
+    st.error("Benchmark data was not found. Please check the benchmark ticker.")
 
 # -----------------------------
 # Tabs
 # -----------------------------
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
-    "Market News",
-    "Price & Returns",
-    "Performance Summary",
-    "Annual Returns",
-    "Risk & Drawdown",
-    "Manager Evaluation",
-    "Portfolio Optimization",
-    "Teaching Notes",
+tab_news, tab_price, tab_summary, tab_annual, tab_risk, tab_manager, tab_opt, tab_notes = st.tabs([
+    "Market News", "Price & Returns", "Performance Summary", "Annual Returns", "Risk & Drawdown",
+    "Manager Evaluation", "Portfolio Optimization", "Teaching Notes"
 ])
 
-with tab1:
-    st.subheader("Opening Bell / Real-Time Market News Briefing")
-    st.write("This tab pulls public RSS headlines and links for teaching and market-awareness purposes. It does not redistribute paid full-text content.")
+# -----------------------------
+# Market News tab
+# -----------------------------
+with tab_news:
+    st.subheader("Market News Briefing")
+    st.write("This tab shows public RSS headlines and links. Students with WSJ access can click WSJ links and read articles using their own subscription.")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        keyword = st.text_input("Keyword filter", "")
+    with col2:
+        max_rows = st.slider("Max headlines", 10, 100, 30, 5)
+    with col3:
+        refresh_minutes = st.slider("Auto-refresh minutes", 5, 60, 15, 5)
+    if st_autorefresh is not None:
+        st_autorefresh(interval=refresh_minutes * 60 * 1000, key="news_refresh")
 
-    col_news1, col_news2, col_news3 = st.columns([1, 1, 1])
-    with col_news1:
-        auto_refresh = st.checkbox("Auto-refresh news", value=True)
-    with col_news2:
-        refresh_minutes = st.selectbox("Refresh interval", [5, 10, 15, 30], index=0)
-    with col_news3:
-        max_headlines = st.slider("Max headlines shown", 10, 50, 25)
-
-    if auto_refresh and st_autorefresh is not None:
-        st_autorefresh(interval=refresh_minutes * 60 * 1000, key="news_autorefresh")
-    elif auto_refresh and st_autorefresh is None:
-        st.caption("Auto-refresh package is not installed. The news feed still refreshes when the app reruns or the browser is refreshed.")
-
-    keyword_filter = st.text_input(
-        "Keyword filter, optional",
-        "AI, Fed, inflation, earnings, semiconductor, oil, banks"
-    )
-
-    selected_sources = st.multiselect(
-        "News sources",
-        list(NEWS_FEEDS.keys()),
-        default=list(NEWS_FEEDS.keys())
-    )
-
-    selected_feed_urls = {k: NEWS_FEEDS[k] for k in selected_sources}
-    news_df = fetch_news_feeds(selected_feed_urls)
-    filtered_news = filter_news(news_df, keyword_filter).head(max_headlines)
-
-    st.caption(f"Last app refresh: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} local browser/session time. RSS feeds are not tick-by-tick newswires; they update as the publishers update their feeds.")
-
-    if filtered_news.empty:
-        st.warning("No headlines matched the current keyword filter. Try clearing or broadening the keywords.")
+    feeds = [
+        ("https://feeds.a.dj.com/rss/RSSMarketsMain.xml", "WSJ Markets"),
+        ("https://feeds.a.dj.com/rss/WSJcomUSBusiness.xml", "WSJ Business"),
+        ("https://www.cnbc.com/id/100003114/device/rss/rss.html", "CNBC Top News"),
+        ("https://www.cnbc.com/id/15839135/device/rss/rss.html", "CNBC Markets"),
+    ]
+    news_frames = [load_rss_news(url, src) for url, src in feeds]
+    news_df = pd.concat(news_frames, ignore_index=True) if news_frames else pd.DataFrame()
+    if keyword.strip() and not news_df.empty:
+        mask = news_df["Headline"].str.contains(keyword.strip(), case=False, na=False)
+        news_df = news_df[mask]
+    if news_df.empty:
+        st.warning("No headlines loaded. RSS feeds may be temporarily unavailable.")
     else:
-        for _, row in filtered_news.iterrows():
-            st.markdown(f"**{row['Source']}** | {row['Published']}  ")
-            if row["Link"]:
-                st.markdown(f"[{row['Headline']}]({row['Link']})")
-            else:
-                st.markdown(row["Headline"])
-            if row.get("Summary"):
-                clean_summary = str(row["Summary"]).replace("<p>", "").replace("</p>", "")
-                st.caption(clean_summary[:300])
-            st.divider()
+        st.dataframe(news_df.head(max_rows), use_container_width=True)
+        for _, row in news_df.head(max_rows).iterrows():
+            st.markdown(f"**{row['Source']}** — [{row['Headline']}]({row['Link']})")
+            if row.get("Published"):
+                st.caption(str(row["Published"]))
 
-    st.subheader("Bloomberg Workflow Integration")
-    st.markdown("""
-    **Recommended Bloomberg workflow for SMIF:** export Bloomberg data from Terminal or Excel Add-In, then upload/analyze it in this app in a later version.
+# Stop non-news tabs if data invalid
+valid_data = (not prices.empty) and bool(available_tickers) and (benchmark in prices.columns) and (not asset_returns.empty)
 
-    Practical examples:
-    - Bloomberg `BDH` / `BDP` / `BDS` export for prices, valuation, estimates, or holdings.
-    - Bloomberg news or research should be used as links/notes in class, not copied as full paid text into this public app.
-    - For now, use this tab as a real-time headline dashboard, then use Bloomberg Terminal on campus for deeper verification.
-    """)
-
-with tab2:
-    st.subheader("Price Data Preview")
-    st.dataframe(prices[available_tickers].tail(), use_container_width=True)
-    st.subheader("Normalized Price Chart")
-    normalized_prices = prices[available_tickers].dropna(how="all") / prices[available_tickers].dropna(how="all").iloc[0]
-    fig_price = px.line(normalized_prices, title="Normalized Price Performance")
-    fig_price.update_layout(xaxis_title="Date", yaxis_title="Normalized Price")
-    st.plotly_chart(fig_price, use_container_width=True)
-    st.subheader("Cumulative Growth of $1")
-    cumulative_returns = (1 + asset_returns.fillna(0)).cumprod()
-    fig_cum = px.line(cumulative_returns, title="Cumulative Return Comparison")
-    fig_cum.update_layout(xaxis_title="Date", yaxis_title="Growth of $1")
-    st.plotly_chart(fig_cum, use_container_width=True)
-
-with tab3:
-    st.subheader("Performance Summary")
-    st.dataframe(metrics_df.style.format({
-        "Cumulative Return": "{:.2%}", "CAGR": "{:.2%}", "Volatility": "{:.2%}",
-        "Sharpe Ratio": "{:.2f}", "Beta vs Benchmark": "{:.2f}", "Max Drawdown": "{:.2%}",
-        "Best Year": "{:.2%}", "Worst Year": "{:.2%}",
-    }), use_container_width=True)
-    st.download_button("Download performance metrics as CSV", metrics_df.to_csv(index=False), "performance_metrics.csv", "text/csv")
-    st.subheader("Risk-Return Scatter Plot")
-    scatter_df = metrics_df.copy()
-    scatter_df["Bubble Size"] = scatter_df["Sharpe Ratio"].fillna(0).clip(lower=0) + 0.1
-    fig_scatter = px.scatter(scatter_df, x="Volatility", y="CAGR", text="Ticker", size="Bubble Size", title="Risk vs Return: CAGR vs Volatility")
-    fig_scatter.update_traces(textposition="top center")
-    st.plotly_chart(fig_scatter, use_container_width=True)
-    st.subheader("Beta vs Sharpe Ratio")
-    fig_beta = px.scatter(scatter_df, x="Beta vs Benchmark", y="Sharpe Ratio", text="Ticker", title=f"Beta vs Sharpe Ratio, Benchmark = {benchmark}")
-    fig_beta.update_traces(textposition="top center")
-    st.plotly_chart(fig_beta, use_container_width=True)
-
-with tab4:
-    st.subheader("Annual Returns")
-    annual_returns = asset_returns.resample("YE").apply(lambda x: (1 + x.dropna()).prod() - 1)
-    annual_returns.index = annual_returns.index.year
-    st.dataframe(annual_returns.style.format("{:.2%}"), use_container_width=True)
-    fig_annual = px.bar(annual_returns, x=annual_returns.index, y=annual_returns.columns, barmode="group", title="Annual Return Comparison")
-    fig_annual.update_layout(xaxis_title="Year", yaxis_title="Annual Return")
-    st.plotly_chart(fig_annual, use_container_width=True)
-
-with tab5:
-    st.subheader("Drawdown Analysis")
-    drawdowns = calculate_drawdowns(asset_returns)
-    fig_drawdown = px.line(drawdowns, title="Drawdown Comparison")
-    fig_drawdown.update_layout(xaxis_title="Date", yaxis_title="Drawdown")
-    st.plotly_chart(fig_drawdown, use_container_width=True)
-    st.subheader("Correlation Matrix")
-    corr_matrix = asset_returns.corr()
-    fig_corr = px.imshow(corr_matrix, text_auto=True, title="Return Correlation Matrix")
-    st.plotly_chart(fig_corr, use_container_width=True)
-    st.subheader("Rolling 12-Month Volatility")
-    rolling_vol = asset_returns.rolling(window=252).std() * np.sqrt(252)
-    fig_rolling_vol = px.line(rolling_vol, title="Rolling 12-Month Volatility")
-    fig_rolling_vol.update_layout(xaxis_title="Date", yaxis_title="Annualized Volatility")
-    st.plotly_chart(fig_rolling_vol, use_container_width=True)
-
-with tab6:
-    st.subheader("Professional Manager Performance Evaluation")
-    st.write(f"This section evaluates each stock or ETF relative to the selected benchmark: **{benchmark}**.")
-    st.markdown("""
-    Key CFA-style metrics include:
-    - **Jensen Alpha:** Excess return after adjusting for beta and the risk-free rate.
-    - **Information Ratio:** Active return relative to tracking error.
-    - **Tracking Error:** Volatility of active returns versus the benchmark.
-    - **Treynor Ratio:** Excess return per unit of beta risk.
-    - **Sortino Ratio:** Excess return per unit of downside risk.
-    - **Upside/Downside Capture:** Participation in benchmark up and down periods.
-    - **Batting Average:** Frequency of outperforming the benchmark.
-    """)
-    st.dataframe(manager_df.style.format({
-        "Jensen Alpha": "{:.2%}", "Information Ratio": "{:.2f}", "Tracking Error": "{:.2%}",
-        "Beta": "{:.2f}", "Treynor Ratio": "{:.2f}", "Sortino Ratio": "{:.2f}",
-        "Upside Capture": "{:.2f}", "Downside Capture": "{:.2f}", "Batting Average": "{:.2%}",
-        "Sharpe Ratio": "{:.2f}", "Max Drawdown": "{:.2%}",
-    }), use_container_width=True)
-    st.download_button("Download manager evaluation as CSV", manager_df.to_csv(index=False), "manager_evaluation.csv", "text/csv")
-    if not manager_df.empty:
-        st.subheader("Information Ratio vs Jensen Alpha")
-        fig_ir_alpha = px.scatter(manager_df, x="Information Ratio", y="Jensen Alpha", text="Ticker", title="Skill Screen: Information Ratio vs Jensen Alpha")
-        fig_ir_alpha.update_traces(textposition="top center")
-        st.plotly_chart(fig_ir_alpha, use_container_width=True)
-
-with tab7:
-    st.subheader("Portfolio Optimization")
-    st.write("This section creates simple long-only optimized portfolios using historical returns. It is for educational purposes and should not be treated as an investment recommendation.")
-    opt_returns = asset_returns.dropna(axis=1, how="any")
-    if opt_returns.shape[1] < 2:
-        st.warning("Optimization needs at least two assets with complete return histories. Try a shorter date range or fewer tickers.")
-    elif opt_returns.shape[1] * max_weight < 1:
-        st.warning("The maximum weight constraint is too tight for the number of available assets. Increase max weight or add more assets.")
+# -----------------------------
+# Price tab
+# -----------------------------
+with tab_price:
+    if not valid_data:
+        st.warning("Price analysis is unavailable until valid ticker data is loaded.")
     else:
-        mean_returns = opt_returns.mean() * 252
-        cov_matrix = opt_returns.cov() * 252
-        asset_names = list(opt_returns.columns)
-        n = len(asset_names)
-        equal_w = np.array([1 / n] * n)
-        max_sharpe_w = optimize_portfolio(mean_returns.values, cov_matrix.values, risk_free_rate, "max_sharpe", max_weight)
-        min_var_w = optimize_portfolio(mean_returns.values, cov_matrix.values, risk_free_rate, "min_var", max_weight)
-        custom_w, custom_message = optimize_custom_portfolio(
-            mean_returns.values,
-            cov_matrix.values,
-            risk_free_rate,
-            custom_objective,
-            max_weight,
-            target_return,
-            target_volatility,
-            risk_aversion,
+        st.subheader("Price Data Preview")
+        st.dataframe(prices[available_tickers].tail(), use_container_width=True)
+        st.subheader("Normalized Price Chart")
+        normalized_prices = prices[available_tickers].dropna(how="all") / prices[available_tickers].dropna(how="all").iloc[0]
+        st.plotly_chart(px.line(normalized_prices, title="Normalized Price Performance"), use_container_width=True)
+        st.subheader("Cumulative Growth of $1")
+        cumulative_returns = (1 + asset_returns).cumprod()
+        st.plotly_chart(px.line(cumulative_returns, title="Cumulative Return Comparison"), use_container_width=True)
+
+# -----------------------------
+# Summary tab
+# -----------------------------
+with tab_summary:
+    if not valid_data:
+        st.warning("Performance summary is unavailable until valid ticker data is loaded.")
+    else:
+        st.subheader("Performance Summary")
+        metrics_df = calculate_metrics(asset_returns, benchmark_returns, risk_free_rate)
+        st.dataframe(metrics_df.style.format({
+            "Cumulative Return": "{:.2%}", "CAGR": "{:.2%}", "Volatility": "{:.2%}",
+            "Sharpe Ratio": "{:.2f}", "Sortino Ratio": "{:.2f}", "Beta vs Benchmark": "{:.2f}",
+            "Max Drawdown": "{:.2%}", "Best Year": "{:.2%}", "Worst Year": "{:.2%}"
+        }), use_container_width=True)
+        st.download_button("Download performance metrics as CSV", metrics_df.to_csv(index=False), "performance_metrics.csv", "text/csv")
+        if not metrics_df.empty:
+            scatter_df = metrics_df.copy()
+            scatter_df["Bubble Size"] = scatter_df["Sharpe Ratio"].fillna(0).clip(lower=0) + 0.1
+            st.subheader("Risk-Return Scatter Plot")
+            fig = px.scatter(scatter_df, x="Volatility", y="CAGR", text="Ticker", size="Bubble Size", title="Risk vs Return: CAGR vs Volatility")
+            fig.update_traces(textposition="top center")
+            st.plotly_chart(fig, use_container_width=True)
+            st.subheader("Beta vs Sharpe Ratio")
+            fig2 = px.scatter(scatter_df, x="Beta vs Benchmark", y="Sharpe Ratio", text="Ticker", title=f"Beta vs Sharpe Ratio, Benchmark = {benchmark}")
+            fig2.update_traces(textposition="top center")
+            st.plotly_chart(fig2, use_container_width=True)
+
+# -----------------------------
+# Annual tab
+# -----------------------------
+with tab_annual:
+    if not valid_data:
+        st.warning("Annual returns are unavailable until valid ticker data is loaded.")
+    else:
+        st.subheader("Annual Returns")
+        annual_returns = asset_returns.resample("YE").apply(lambda x: (1 + x).prod() - 1)
+        annual_returns.index = annual_returns.index.year
+        st.dataframe(annual_returns.style.format("{:.2%}"), use_container_width=True)
+        st.plotly_chart(px.bar(annual_returns, barmode="group", title="Annual Return Comparison"), use_container_width=True)
+
+# -----------------------------
+# Risk tab
+# -----------------------------
+with tab_risk:
+    if not valid_data:
+        st.warning("Risk analysis is unavailable until valid ticker data is loaded.")
+    else:
+        st.subheader("Drawdown Analysis")
+        drawdowns = calculate_drawdowns(asset_returns)
+        st.plotly_chart(px.line(drawdowns, title="Drawdown Comparison"), use_container_width=True)
+        st.subheader("Correlation Matrix")
+        corr_matrix = asset_returns.corr()
+        st.plotly_chart(px.imshow(corr_matrix, text_auto=True, title="Return Correlation Matrix"), use_container_width=True)
+        st.subheader("Rolling 12-Month Volatility")
+        rolling_vol = asset_returns.rolling(window=252).std() * np.sqrt(252)
+        st.plotly_chart(px.line(rolling_vol, title="Rolling 12-Month Volatility"), use_container_width=True)
+
+# -----------------------------
+# Manager evaluation tab
+# -----------------------------
+with tab_manager:
+    if not valid_data:
+        st.warning("Manager evaluation is unavailable until valid ticker data is loaded.")
+    else:
+        st.subheader("Professional Manager Performance Evaluation")
+        st.write(f"This section evaluates each stock or ETF relative to the selected benchmark: **{benchmark}**.")
+        st.markdown(
+            """
+            Key CFA-style metrics include:
+            - **Jensen Alpha:** Excess return after adjusting for beta and the risk-free rate.
+            - **Information Ratio:** Active return relative to tracking error.
+            - **Tracking Error:** Volatility of active returns versus the benchmark.
+            - **Treynor Ratio:** Excess return per unit of beta risk.
+            - **Upside Capture:** Participation when the benchmark is up.
+            - **Downside Capture:** Participation when the benchmark is down.
+            - **Batting Average:** Frequency of outperforming the benchmark.
+            """
         )
+        manager_df = calculate_manager_metrics(asset_returns, benchmark_returns, risk_free_rate)
+        st.dataframe(manager_df.style.format({
+            "Jensen Alpha": "{:.2%}", "Information Ratio": "{:.2f}", "Tracking Error": "{:.2%}",
+            "Treynor Ratio": "{:.2f}", "Upside Capture": "{:.2f}", "Downside Capture": "{:.2f}",
+            "Batting Average": "{:.2%}", "Sharpe Ratio": "{:.2f}", "Max Drawdown": "{:.2%}"
+        }), use_container_width=True)
+        st.download_button("Download manager evaluation as CSV", manager_df.to_csv(index=False), "manager_evaluation.csv", "text/csv")
 
-        portfolios = []
-        for name, weights in [
-            ("Equal Weight", equal_w),
-            ("Maximum Sharpe", max_sharpe_w),
-            ("Minimum Variance", min_var_w),
-            (f"Custom: {custom_objective}", custom_w),
-        ]:
-            if weights is not None:
-                ret, vol, sharpe = portfolio_stats(weights, mean_returns.values, cov_matrix.values, risk_free_rate)
-                portfolios.append({"Portfolio": name, "Expected Return": ret, "Volatility": vol, "Sharpe Ratio": sharpe})
-        portfolio_summary = pd.DataFrame(portfolios)
-        st.subheader("Optimized Portfolio Summary")
-        if custom_w is None:
-            st.warning(f"Custom optimization did not produce a feasible solution: {custom_message}")
+# -----------------------------
+# Optimization tab
+# -----------------------------
+with tab_opt:
+    if not valid_data or len(asset_returns.columns) < 2:
+        st.warning("Portfolio optimization requires at least two valid tickers with return data.")
+    else:
+        st.subheader("Portfolio Optimization")
+        opt_returns = asset_returns.dropna(axis=1, how="any")
+        if opt_returns.shape[1] < 2:
+            st.warning("Not enough complete return series for optimization. Try a shorter date range or fewer tickers.")
         else:
-            st.success(custom_message)
-        st.dataframe(portfolio_summary.style.format({"Expected Return": "{:.2%}", "Volatility": "{:.2%}", "Sharpe Ratio": "{:.2f}"}), use_container_width=True)
-        st.subheader("Optimized Weights")
-        weight_rows = []
-        for name, weights in [
-            ("Equal Weight", equal_w),
-            ("Maximum Sharpe", max_sharpe_w),
-            ("Minimum Variance", min_var_w),
-            (f"Custom: {custom_objective}", custom_w),
-        ]:
-            if weights is not None:
-                row = {"Portfolio": name}
-                row.update({asset_names[i]: weights[i] for i in range(n)})
-                weight_rows.append(row)
-        weights_df = pd.DataFrame(weight_rows)
-        st.dataframe(weights_df.style.format({col: "{:.2%}" for col in weights_df.columns if col != "Portfolio"}), use_container_width=True)
-        st.download_button("Download optimized weights as CSV", weights_df.to_csv(index=False), "optimized_weights.csv", "text/csv")
-        st.subheader("Efficient Frontier Simulation")
-        frontier_df = random_portfolios(mean_returns.values, cov_matrix.values, risk_free_rate, num_simulations, max_weight)
-        if frontier_df.empty:
-            st.warning("Unable to generate frontier with the current constraints.")
-        else:
-            fig_frontier = px.scatter(frontier_df, x="Volatility", y="Return", color="Sharpe", title="Efficient Frontier: Random Long-Only Portfolios")
-            for _, row in portfolio_summary.iterrows():
-                fig_frontier.add_trace(go.Scatter(x=[row["Volatility"]], y=[row["Expected Return"]], mode="markers+text", text=[row["Portfolio"]], textposition="top center", marker=dict(size=12, symbol="star"), name=row["Portfolio"]))
-            fig_frontier.update_layout(xaxis_title="Annualized Volatility", yaxis_title="Expected Annual Return")
-            st.plotly_chart(fig_frontier, use_container_width=True)
-        st.markdown("""
-        **Custom optimization interpretation:** The custom portfolio lets students move beyond standard mean-variance optimization. They can test practical investment constraints such as a target return, a target risk budget, a maximum position size, or a balanced return-risk tradeoff. This is closer to how a real fund manager thinks: the objective is not always simply maximum Sharpe ratio.
+            mu = opt_returns.mean() * 252
+            cov = opt_returns.cov() * 252
+            names = opt_returns.columns.tolist()
+            n = len(names)
+            equal_w = np.repeat(1 / n, n)
+            eq_ret, eq_vol, eq_sharpe = portfolio_stats(equal_w, mu, cov, risk_free_rate)
+            min_w = optimize_portfolio(mu.values, cov.values, risk_free_rate, "min_vol", max_weight)
+            maxs_w = optimize_portfolio(mu.values, cov.values, risk_free_rate, "max_sharpe", max_weight)
+            obj_map = {
+                "Maximize Sharpe Ratio": "max_sharpe",
+                "Minimize Volatility": "min_vol",
+                "Target Return: Minimize Volatility": "target_return",
+                "Target Risk: Maximize Return": "target_risk",
+                "Balanced Return-Risk Score": "balanced",
+            }
+            custom_w = optimize_portfolio(mu.values, cov.values, risk_free_rate, obj_map[custom_objective], max_weight, target_return, target_volatility, risk_penalty)
+            rows = []
+            for label, w in [("Equal Weight", equal_w), ("Minimum Variance", min_w), ("Maximum Sharpe", maxs_w), ("Custom Optimization", custom_w)]:
+                if w is not None:
+                    ret, vol, sh = portfolio_stats(w, mu.values, cov.values, risk_free_rate)
+                    rows.append({"Portfolio": label, "Expected Return": ret, "Volatility": vol, "Sharpe Ratio": sh})
+            port_summary = pd.DataFrame(rows)
+            st.subheader("Optimized Portfolio Summary")
+            st.dataframe(port_summary.style.format({"Expected Return": "{:.2%}", "Volatility": "{:.2%}", "Sharpe Ratio": "{:.2f}"}), use_container_width=True)
+            weight_rows = []
+            for label, w in [("Equal Weight", equal_w), ("Minimum Variance", min_w), ("Maximum Sharpe", maxs_w), ("Custom Optimization", custom_w)]:
+                if w is not None:
+                    for name, weight in zip(names, w):
+                        weight_rows.append({"Portfolio": label, "Ticker": name, "Weight": weight})
+            weights_df = pd.DataFrame(weight_rows)
+            st.subheader("Optimized Weights")
+            st.dataframe(weights_df.pivot(index="Ticker", columns="Portfolio", values="Weight").fillna(0).style.format("{:.2%}"), use_container_width=True)
+            st.download_button("Download optimized weights as CSV", weights_df.to_csv(index=False), "optimized_weights.csv", "text/csv")
+            st.subheader("Simulated Efficient Frontier")
+            sim_df = random_portfolios(mu.values, cov.values, risk_free_rate, num_random_portfolios, max_weight)
+            if not sim_df.empty:
+                st.plotly_chart(px.scatter(sim_df, x="Volatility", y="Return", color="Sharpe Ratio", title="Efficient Frontier Simulation"), use_container_width=True)
+            else:
+                st.warning("Efficient frontier simulation could not generate portfolios under the current constraints. Increase maximum weight per asset.")
 
-        **Teaching interpretation:** Optimization is only as good as its inputs. Students should compare optimized weights with their investment thesis, valuation work, liquidity constraints, and risk limits. A model may over-allocate to assets that performed well historically, so professional judgment is required.
-        """)
-
-with tab8:
+# -----------------------------
+# Teaching notes tab
+# -----------------------------
+with tab_notes:
     st.subheader("Teaching Notes for SMIF Students")
-    st.markdown("""
-    ## How to Use This Website
-    This website is designed to help SMIF and Advanced Financial Modeling students compare individual stocks and ETFs in a structured way.
+    st.markdown(
+        """
+        ## How to Use This Website
 
-    Students should not simply choose the asset with the highest return. They should compare return, risk, beta, drawdown, correlation, manager evaluation metrics, and the role of each asset in the portfolio.
+        This website is designed to help SMIF and Advanced Financial Modeling students compare individual stocks and ETFs in a structured way.
 
-    ## Key Questions
-    1. Which asset had the highest cumulative return?
-    2. Which asset had the highest Sharpe ratio?
-    3. Which asset had the largest maximum drawdown?
-    4. Which asset has the highest beta relative to the benchmark?
-    5. Are these assets highly correlated with one another?
-    6. Does this asset improve portfolio diversification?
-    7. Is performance due to alpha, beta exposure, factor exposure, or one lucky period?
-    8. How do optimized weights compare with your qualitative investment thesis?
+        Students should not simply choose the asset with the highest return. They should compare return, risk, beta, drawdown, correlation, and the role of each asset in the portfolio.
 
-    ## Suggested Student Output
-    For each stock or ETF, students should summarize:
-    - Investment thesis
-    - Return performance
-    - Risk profile
-    - Beta and market sensitivity
-    - Drawdown risk
-    - Correlation with existing holdings
-    - Jensen alpha, information ratio, and tracking error
-    - Optimization role: core holding, satellite holding, hedge, or excluded asset
-    - Final recommendation: Buy, Add, Hold, Trim, Sell, or Watchlist
+        ## Suggested Student Output
 
-    ## Important Reminder
-    This app is a learning tool. It is not a substitute for fundamental analysis, valuation, macro analysis, or professional judgment.
-    """)
+        For each stock or ETF, students should summarize:
+
+        - Investment thesis
+        - Return performance
+        - Risk profile
+        - Beta and market sensitivity
+        - Drawdown risk
+        - Correlation with existing holdings
+        - Manager evaluation metrics: alpha, information ratio, tracking error, capture ratios
+        - Portfolio optimization role
+        - Final recommendation: Buy, Add, Hold, Trim, Sell, or Watchlist
+
+        ## Optimization Reminder
+
+        Optimization is a decision-support tool, not an automatic investment decision. Students must explain whether the optimized weights make economic sense and whether they are consistent with the fund's investment process.
+        """
+    )
