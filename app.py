@@ -27,7 +27,7 @@ st.write(
     """
     This interactive website is designed for SMIF and Advanced Financial Modeling students. Students can compare individual stocks and ETFs using Python, AI-assisted coding, and financial modeling tools.
 
-    The website allows users to compare cumulative returns, annual returns, CAGR, volatility, Sharpe ratios, beta, maximum drawdowns, correlations, rolling volatility, professional manager evaluation metrics, and portfolio optimization results.
+    The website allows users to compare cumulative returns, annual returns, CAGR, volatility, Sharpe ratios, beta, maximum drawdowns, correlations, rolling volatility, professional manager evaluation metrics, mean-variance optimization, and custom optimization results.
     """
 )
 
@@ -64,6 +64,41 @@ st.sidebar.markdown("---")
 st.sidebar.subheader("Optimization Settings")
 max_weight = st.sidebar.slider("Maximum weight per asset", 0.05, 1.00, 0.20, 0.05)
 num_simulations = st.sidebar.slider("Random portfolios for efficient frontier", 500, 8000, 2500, 500)
+
+st.sidebar.markdown("**Custom Optimization**")
+custom_objective = st.sidebar.selectbox(
+    "Custom objective",
+    [
+        "Maximize Sharpe Ratio",
+        "Minimize Volatility",
+        "Target Return: Minimize Volatility",
+        "Target Risk: Maximize Return",
+        "Balanced Return-Risk Score",
+    ],
+)
+target_return = st.sidebar.number_input(
+    "Target annual return for custom optimization",
+    min_value=-0.50,
+    max_value=1.00,
+    value=0.10,
+    step=0.01,
+    format="%.2f",
+)
+target_volatility = st.sidebar.number_input(
+    "Target annual volatility for custom optimization",
+    min_value=0.01,
+    max_value=1.00,
+    value=0.20,
+    step=0.01,
+    format="%.2f",
+)
+risk_aversion = st.sidebar.slider(
+    "Risk penalty for balanced score",
+    min_value=0.0,
+    max_value=10.0,
+    value=3.0,
+    step=0.5,
+)
 
 st.sidebar.markdown("---")
 st.sidebar.write("Example stocks: AAPL, MSFT, NVDA, AMZN, META, JPM, LLY")
@@ -229,14 +264,68 @@ def optimize_portfolio(mean_returns, cov_matrix, rf_rate, objective="max_sharpe"
     x0 = np.array([1 / n] * n)
     if n * max_w < 1:
         return None
+
     def neg_sharpe(w):
         ret, vol, sharpe = portfolio_stats(w, mean_returns, cov_matrix, rf_rate)
         return -sharpe if not np.isnan(sharpe) else 1e6
+
     def min_vol(w):
         return portfolio_stats(w, mean_returns, cov_matrix, rf_rate)[1]
+
     objective_func = neg_sharpe if objective == "max_sharpe" else min_vol
     result = minimize(objective_func, x0=x0, method="SLSQP", bounds=bounds, constraints=constraints)
     return result.x if result.success else None
+
+
+def optimize_custom_portfolio(
+    mean_returns,
+    cov_matrix,
+    rf_rate,
+    custom_objective,
+    max_w=0.20,
+    target_return=0.10,
+    target_volatility=0.20,
+    risk_aversion=3.0,
+):
+    """Create a long-only custom optimized portfolio with practical SMIF-style constraints."""
+    n = len(mean_returns)
+    if n * max_w < 1:
+        return None, "The maximum weight constraint is too tight for the number of assets."
+
+    bounds = tuple((0, max_w) for _ in range(n))
+    constraints = [{"type": "eq", "fun": lambda w: np.sum(w) - 1}]
+    x0 = np.array([1 / n] * n)
+
+    def ret(w):
+        return float(np.dot(w, mean_returns))
+
+    def vol(w):
+        return float(np.sqrt(np.dot(w.T, np.dot(cov_matrix, w))))
+
+    def sharpe(w):
+        v = vol(w)
+        return (ret(w) - rf_rate) / v if v != 0 else -1e6
+
+    if custom_objective == "Maximize Sharpe Ratio":
+        objective = lambda w: -sharpe(w)
+    elif custom_objective == "Minimize Volatility":
+        objective = lambda w: vol(w)
+    elif custom_objective == "Target Return: Minimize Volatility":
+        constraints.append({"type": "ineq", "fun": lambda w: ret(w) - target_return})
+        objective = lambda w: vol(w)
+    elif custom_objective == "Target Risk: Maximize Return":
+        constraints.append({"type": "ineq", "fun": lambda w: target_volatility - vol(w)})
+        objective = lambda w: -ret(w)
+    elif custom_objective == "Balanced Return-Risk Score":
+        # Maximize return minus a penalty for variance. Higher risk_aversion penalizes risk more.
+        objective = lambda w: -(ret(w) - risk_aversion * (vol(w) ** 2))
+    else:
+        objective = lambda w: -sharpe(w)
+
+    result = minimize(objective, x0=x0, method="SLSQP", bounds=bounds, constraints=constraints)
+    if result.success:
+        return result.x, "Optimization successful."
+    return None, result.message
 
 def random_portfolios(mean_returns, cov_matrix, rf_rate, num=2500, max_w=0.20):
     n = len(mean_returns)
@@ -369,17 +458,42 @@ with tab6:
         equal_w = np.array([1 / n] * n)
         max_sharpe_w = optimize_portfolio(mean_returns.values, cov_matrix.values, risk_free_rate, "max_sharpe", max_weight)
         min_var_w = optimize_portfolio(mean_returns.values, cov_matrix.values, risk_free_rate, "min_var", max_weight)
+        custom_w, custom_message = optimize_custom_portfolio(
+            mean_returns.values,
+            cov_matrix.values,
+            risk_free_rate,
+            custom_objective,
+            max_weight,
+            target_return,
+            target_volatility,
+            risk_aversion,
+        )
+
         portfolios = []
-        for name, weights in [("Equal Weight", equal_w), ("Maximum Sharpe", max_sharpe_w), ("Minimum Variance", min_var_w)]:
+        for name, weights in [
+            ("Equal Weight", equal_w),
+            ("Maximum Sharpe", max_sharpe_w),
+            ("Minimum Variance", min_var_w),
+            (f"Custom: {custom_objective}", custom_w),
+        ]:
             if weights is not None:
                 ret, vol, sharpe = portfolio_stats(weights, mean_returns.values, cov_matrix.values, risk_free_rate)
                 portfolios.append({"Portfolio": name, "Expected Return": ret, "Volatility": vol, "Sharpe Ratio": sharpe})
         portfolio_summary = pd.DataFrame(portfolios)
         st.subheader("Optimized Portfolio Summary")
+        if custom_w is None:
+            st.warning(f"Custom optimization did not produce a feasible solution: {custom_message}")
+        else:
+            st.success(custom_message)
         st.dataframe(portfolio_summary.style.format({"Expected Return": "{:.2%}", "Volatility": "{:.2%}", "Sharpe Ratio": "{:.2f}"}), use_container_width=True)
         st.subheader("Optimized Weights")
         weight_rows = []
-        for name, weights in [("Equal Weight", equal_w), ("Maximum Sharpe", max_sharpe_w), ("Minimum Variance", min_var_w)]:
+        for name, weights in [
+            ("Equal Weight", equal_w),
+            ("Maximum Sharpe", max_sharpe_w),
+            ("Minimum Variance", min_var_w),
+            (f"Custom: {custom_objective}", custom_w),
+        ]:
             if weights is not None:
                 row = {"Portfolio": name}
                 row.update({asset_names[i]: weights[i] for i in range(n)})
@@ -398,6 +512,8 @@ with tab6:
             fig_frontier.update_layout(xaxis_title="Annualized Volatility", yaxis_title="Expected Annual Return")
             st.plotly_chart(fig_frontier, use_container_width=True)
         st.markdown("""
+        **Custom optimization interpretation:** The custom portfolio lets students move beyond standard mean-variance optimization. They can test practical investment constraints such as a target return, a target risk budget, a maximum position size, or a balanced return-risk tradeoff. This is closer to how a real fund manager thinks: the objective is not always simply maximum Sharpe ratio.
+
         **Teaching interpretation:** Optimization is only as good as its inputs. Students should compare optimized weights with their investment thesis, valuation work, liquidity constraints, and risk limits. A model may over-allocate to assets that performed well historically, so professional judgment is required.
         """)
 
