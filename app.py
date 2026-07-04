@@ -5,6 +5,13 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from scipy.optimize import minimize
+import feedparser
+from datetime import datetime, timezone
+
+try:
+    from streamlit_autorefresh import st_autorefresh
+except Exception:
+    st_autorefresh = None
 
 st.set_page_config(page_title="SMIF Stock & ETF Analysis Website", layout="wide")
 
@@ -27,7 +34,7 @@ st.write(
     """
     This interactive website is designed for SMIF and Advanced Financial Modeling students. Students can compare individual stocks and ETFs using Python, AI-assisted coding, and financial modeling tools.
 
-    The website allows users to compare cumulative returns, annual returns, CAGR, volatility, Sharpe ratios, beta, maximum drawdowns, correlations, rolling volatility, professional manager evaluation metrics, mean-variance optimization, and custom optimization results.
+    The website allows users to compare cumulative returns, annual returns, CAGR, volatility, Sharpe ratios, beta, maximum drawdowns, correlations, rolling volatility, professional manager evaluation metrics, mean-variance optimization, and custom optimization results, and real-time market headline updates.
     """
 )
 
@@ -342,13 +349,63 @@ def random_portfolios(mean_returns, cov_matrix, rf_rate, num=2500, max_w=0.20):
         rows.append({"Return": ret, "Volatility": vol, "Sharpe": sharpe, "Weights": w})
     return pd.DataFrame(rows)
 
+
+# -----------------------------
+# Market News RSS Helpers
+# -----------------------------
+NEWS_FEEDS = {
+    "WSJ Markets": "https://feeds.a.dj.com/rss/RSSMarketsMain.xml",
+    "WSJ Business": "https://feeds.a.dj.com/rss/WSJcomUSBusiness.xml",
+    "CNBC Top News": "https://www.cnbc.com/id/100003114/device/rss/rss.html",
+    "CNBC Markets": "https://www.cnbc.com/id/10001147/device/rss/rss.html",
+}
+
+@st.cache_data(ttl=300)
+def fetch_news_feeds(feed_urls):
+    rows = []
+    for source, url in feed_urls.items():
+        try:
+            parsed = feedparser.parse(url)
+            for entry in parsed.entries[:12]:
+                published = entry.get("published", entry.get("updated", ""))
+                title = entry.get("title", "Untitled")
+                link = entry.get("link", "")
+                summary = entry.get("summary", "")
+                rows.append({
+                    "Source": source,
+                    "Published": published,
+                    "Headline": title,
+                    "Link": link,
+                    "Summary": summary,
+                })
+        except Exception as exc:
+            rows.append({
+                "Source": source,
+                "Published": "",
+                "Headline": f"Unable to load feed: {exc}",
+                "Link": url,
+                "Summary": "",
+            })
+    return pd.DataFrame(rows)
+
+def filter_news(news_df, keyword_text):
+    if news_df.empty or not keyword_text.strip():
+        return news_df
+    keywords = [k.strip().lower() for k in keyword_text.split(",") if k.strip()]
+    if not keywords:
+        return news_df
+    combined = (news_df["Headline"].fillna("") + " " + news_df["Summary"].fillna("")).str.lower()
+    mask = combined.apply(lambda x: any(k in x for k in keywords))
+    return news_df[mask]
+
 metrics_df = calculate_metrics(asset_returns, benchmark_returns, risk_free_rate)
 manager_df = calculate_manager_metrics(asset_returns, benchmark_returns, risk_free_rate)
 
 # -----------------------------
 # Tabs
 # -----------------------------
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+    "Market News",
     "Price & Returns",
     "Performance Summary",
     "Annual Returns",
@@ -359,6 +416,64 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
 ])
 
 with tab1:
+    st.subheader("Opening Bell / Real-Time Market News Briefing")
+    st.write("This tab pulls public RSS headlines and links for teaching and market-awareness purposes. It does not redistribute paid full-text content.")
+
+    col_news1, col_news2, col_news3 = st.columns([1, 1, 1])
+    with col_news1:
+        auto_refresh = st.checkbox("Auto-refresh news", value=True)
+    with col_news2:
+        refresh_minutes = st.selectbox("Refresh interval", [5, 10, 15, 30], index=0)
+    with col_news3:
+        max_headlines = st.slider("Max headlines shown", 10, 50, 25)
+
+    if auto_refresh and st_autorefresh is not None:
+        st_autorefresh(interval=refresh_minutes * 60 * 1000, key="news_autorefresh")
+    elif auto_refresh and st_autorefresh is None:
+        st.caption("Auto-refresh package is not installed. The news feed still refreshes when the app reruns or the browser is refreshed.")
+
+    keyword_filter = st.text_input(
+        "Keyword filter, optional",
+        "AI, Fed, inflation, earnings, semiconductor, oil, banks"
+    )
+
+    selected_sources = st.multiselect(
+        "News sources",
+        list(NEWS_FEEDS.keys()),
+        default=list(NEWS_FEEDS.keys())
+    )
+
+    selected_feed_urls = {k: NEWS_FEEDS[k] for k in selected_sources}
+    news_df = fetch_news_feeds(selected_feed_urls)
+    filtered_news = filter_news(news_df, keyword_filter).head(max_headlines)
+
+    st.caption(f"Last app refresh: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} local browser/session time. RSS feeds are not tick-by-tick newswires; they update as the publishers update their feeds.")
+
+    if filtered_news.empty:
+        st.warning("No headlines matched the current keyword filter. Try clearing or broadening the keywords.")
+    else:
+        for _, row in filtered_news.iterrows():
+            st.markdown(f"**{row['Source']}** | {row['Published']}  ")
+            if row["Link"]:
+                st.markdown(f"[{row['Headline']}]({row['Link']})")
+            else:
+                st.markdown(row["Headline"])
+            if row.get("Summary"):
+                clean_summary = str(row["Summary"]).replace("<p>", "").replace("</p>", "")
+                st.caption(clean_summary[:300])
+            st.divider()
+
+    st.subheader("Bloomberg Workflow Integration")
+    st.markdown("""
+    **Recommended Bloomberg workflow for SMIF:** export Bloomberg data from Terminal or Excel Add-In, then upload/analyze it in this app in a later version.
+
+    Practical examples:
+    - Bloomberg `BDH` / `BDP` / `BDS` export for prices, valuation, estimates, or holdings.
+    - Bloomberg news or research should be used as links/notes in class, not copied as full paid text into this public app.
+    - For now, use this tab as a real-time headline dashboard, then use Bloomberg Terminal on campus for deeper verification.
+    """)
+
+with tab2:
     st.subheader("Price Data Preview")
     st.dataframe(prices[available_tickers].tail(), use_container_width=True)
     st.subheader("Normalized Price Chart")
@@ -372,7 +487,7 @@ with tab1:
     fig_cum.update_layout(xaxis_title="Date", yaxis_title="Growth of $1")
     st.plotly_chart(fig_cum, use_container_width=True)
 
-with tab2:
+with tab3:
     st.subheader("Performance Summary")
     st.dataframe(metrics_df.style.format({
         "Cumulative Return": "{:.2%}", "CAGR": "{:.2%}", "Volatility": "{:.2%}",
@@ -391,7 +506,7 @@ with tab2:
     fig_beta.update_traces(textposition="top center")
     st.plotly_chart(fig_beta, use_container_width=True)
 
-with tab3:
+with tab4:
     st.subheader("Annual Returns")
     annual_returns = asset_returns.resample("YE").apply(lambda x: (1 + x.dropna()).prod() - 1)
     annual_returns.index = annual_returns.index.year
@@ -400,7 +515,7 @@ with tab3:
     fig_annual.update_layout(xaxis_title="Year", yaxis_title="Annual Return")
     st.plotly_chart(fig_annual, use_container_width=True)
 
-with tab4:
+with tab5:
     st.subheader("Drawdown Analysis")
     drawdowns = calculate_drawdowns(asset_returns)
     fig_drawdown = px.line(drawdowns, title="Drawdown Comparison")
@@ -416,7 +531,7 @@ with tab4:
     fig_rolling_vol.update_layout(xaxis_title="Date", yaxis_title="Annualized Volatility")
     st.plotly_chart(fig_rolling_vol, use_container_width=True)
 
-with tab5:
+with tab6:
     st.subheader("Professional Manager Performance Evaluation")
     st.write(f"This section evaluates each stock or ETF relative to the selected benchmark: **{benchmark}**.")
     st.markdown("""
@@ -442,7 +557,7 @@ with tab5:
         fig_ir_alpha.update_traces(textposition="top center")
         st.plotly_chart(fig_ir_alpha, use_container_width=True)
 
-with tab6:
+with tab7:
     st.subheader("Portfolio Optimization")
     st.write("This section creates simple long-only optimized portfolios using historical returns. It is for educational purposes and should not be treated as an investment recommendation.")
     opt_returns = asset_returns.dropna(axis=1, how="any")
@@ -517,7 +632,7 @@ with tab6:
         **Teaching interpretation:** Optimization is only as good as its inputs. Students should compare optimized weights with their investment thesis, valuation work, liquidity constraints, and risk limits. A model may over-allocate to assets that performed well historically, so professional judgment is required.
         """)
 
-with tab7:
+with tab8:
     st.subheader("Teaching Notes for SMIF Students")
     st.markdown("""
     ## How to Use This Website
