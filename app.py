@@ -361,9 +361,16 @@ elif benchmark not in prices.columns:
 # -----------------------------
 # Tabs
 # -----------------------------
-tab_news, tab_price, tab_summary, tab_annual, tab_risk, tab_manager, tab_opt, tab_notes = st.tabs([
-    "Market News", "Price & Returns", "Performance Summary", "Annual Returns", "Risk & Drawdown",
-    "Manager Evaluation", "Portfolio Optimization", "Teaching Notes"
+ tab_news, tab_price, tab_summary, tab_annual, tab_risk, tab_manager, tab_opt, tab_macro, tab_notes = st.tabs([
+    "Market News",
+    "Price & Returns",
+    "Performance Summary",
+    "Annual Returns",
+    "Risk & Drawdown",
+    "Manager Evaluation",
+    "Portfolio Optimization",
+    "Macro & Market Regime",
+    "Teaching Notes",
 ])
 
 # -----------------------------
@@ -559,6 +566,12 @@ with tab_opt:
             else:
                 st.warning("Efficient frontier simulation could not generate portfolios under the current constraints. Increase maximum weight per asset.")
 
+
+# -----------------------------
+# Macro & Market Regime tab
+# -----------------------------
+with tab_macro:
+    render_macro_market_regime_tab()
 # -----------------------------
 # Teaching notes tab
 # -----------------------------
