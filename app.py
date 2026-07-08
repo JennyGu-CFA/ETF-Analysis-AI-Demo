@@ -361,7 +361,8 @@ elif benchmark not in prices.columns:
 # -----------------------------
 # Tabs
 # -----------------------------
- tab_news, tab_price, tab_summary, tab_annual, tab_risk, tab_manager, tab_opt, tab_macro, tab_notes = st.tabs([
+
+tab_news, tab_price, tab_summary, tab_annual, tab_risk, tab_manager, tab_opt, tab_macro, tab_notes = st.tabs([
     "Market News",
     "Price & Returns",
     "Performance Summary",
