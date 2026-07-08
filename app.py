@@ -1,3 +1,5 @@
+from macro_panel import render_macro_market_regime_tab
+
 import streamlit as st
 import yfinance as yf
 import pandas as pd
